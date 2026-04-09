@@ -25,12 +25,13 @@ model Member {
 // 2. 편지 (Letter)
 model Letter {
   id        Int      @id @default(autoincrement())
-  title     String   // 제목
-  content   String   // 내용 (줄글)
-  openDate  DateTime // 📅 개봉 예정일 (타임캡슐 핵심!)
-  createdAt DateTime @default(now()) // 작성일
-  
-  // 👇 핵심: "이 편지의 주인은 Member 테이블의 id다"
+  type      String   @default("text") // "text" | "video"
+  content   String?  // 텍스트 편지 내용 (영상 편지면 null)
+  videoUrl  String?  // R2 영상 URL (텍스트 편지면 null)
+  openDate  DateTime // 📅 개봉 예정일
+  createdAt DateTime @default(now())
+  sentAt    DateTime? // 이메일 발송 시각 (null = 미발송)
+
   author    Member   @relation(fields: [authorId], references: [id])
-  authorId  Int      // 실제 DB에 저장되는 '작성자 번호'
+  authorId  Int
 }
