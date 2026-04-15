@@ -20,12 +20,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html {
-  background: linear-gradient(
-    to bottom,
-    #0d1520 0%, #151f2e 15%, #1e2d3f 30%, #2a3a4d 45%,
-    #3d4b5a 58%, #5a5a5a 68%, #766652 78%,
-    #9a8568 86%, #b89a73 93%, #d4b08a 100%
-  ) no-repeat fixed;
+  background: #0d1520; /* 기본 fallback — 실제 배경은 BackgroundLayers가 담당 */
   min-height: 100vh;
 }
 
@@ -261,6 +256,10 @@ body {
 @keyframes recPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }
+}
+@keyframes callPulse {
+  0%, 100% { box-shadow: 0 4px 20px rgba(39,174,96,0.4); }
+  50% { box-shadow: 0 4px 32px rgba(39,174,96,0.8), 0 0 0 8px rgba(39,174,96,0.15); }
 }
 @keyframes fadeIn {
   from { opacity: 0; transform: translateX(-50%) translateY(10px); }

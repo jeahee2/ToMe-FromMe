@@ -23,14 +23,18 @@ export default function SignupPage() {
 
   async function checkUsername() {
     if (!userid) return alert('아이디를 입력하세요.');
-    const res = await fetch('/check-username', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userid }),
-    });
-    const data = await res.json();
-    setIdMsg({ text: data.message, ok: data.available });
-    setIdChecked(data.available);
+    try {
+      const res = await fetch('/check-username', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userid }),
+      });
+      const data = await res.json();
+      setIdMsg({ text: data.message, ok: data.available });
+      setIdChecked(data.available);
+    } catch {
+      setIdMsg({ text: '서버에 연결할 수 없습니다.', ok: false });
+    }
   }
 
   async function handleRegister() {

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -17,19 +17,449 @@ function tomorrow() {
   return d.toISOString().split('T')[0];
 }
 
+// ── 글자 하나씩 페이드인 텍스트 입력 컴포넌트 ──
+function AnimatedTextarea({ value, onChange, placeholder }) {
+  const textareaRef = useRef(null);
+  const [chars, setChars] = useState([]); // [{ id, char }]
+  const idCounter = useRef(0);
+  const prevValue = useRef('');
+
+  useEffect(() => {
+    if (value === '') { setChars([]); prevValue.current = ''; }
+  }, [value]);
+
+  function handleChange(e) {
+    const newVal = e.target.value;
+    const oldVal = prevValue.current;
+    // 공통 접두사 길이
+    let common = 0;
+    const minLen = Math.min(oldVal.length, newVal.length);
+    while (common < minLen && oldVal[common] === newVal[common]) common++;
+
+    setChars(prev => [
+      ...prev.slice(0, common),
+      ...newVal.slice(common).split('').map(ch => ({ id: idCounter.current++, char: ch })),
+    ]);
+    prevValue.current = newVal;
+    onChange(newVal);
+  }
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {/* 시각적 오버레이 */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        padding: 40, fontSize: 24, fontWeight: 300, lineHeight: 1.7,
+        pointerEvents: 'none', fontFamily: 'inherit', overflow: 'hidden',
+      }}>
+        {!value && (
+          <span style={{ color: 'rgba(255,252,223,0.35)', fontSize: 22, fontWeight: 300 }}>
+            {placeholder}
+          </span>
+        )}
+        {chars.map(({ id, char }) =>
+          char === '\n'
+            ? <br key={id} />
+            : (
+              <motion.span
+                key={id}
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                style={{ color: '#fffcdf', display: 'inline' }}
+              >
+                {char}
+              </motion.span>
+            )
+        )}
+      </div>
+      {/* 실제 textarea (투명 텍스트, 캐럿만 보임) */}
+      <textarea
+        ref={textareaRef}
+        id="textInput"
+        value={value}
+        onChange={handleChange}
+        style={{
+          position: 'absolute', inset: 0, width: '100%', height: '100%',
+          background: 'transparent', border: 'none', outline: 'none',
+          padding: 40, color: 'transparent', caretColor: 'rgba(255,252,223,0.8)',
+          fontSize: 24, fontWeight: 300, resize: 'none',
+          fontFamily: 'inherit', lineHeight: 1.7,
+        }}
+      />
+    </div>
+  );
+}
+
+// ── 서명 캔버스 컴포넌트 ──
+function SignatureCanvas({ onSave, onClose, existing }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const pendingData = useRef(null);
+  const [hasDrawn, setHasDrawn] = useState(false);
+  const [locked, setLocked] = useState(false);
+
+  // 기존 서명이 있으면 캔버스에 복원
+  useEffect(() => {
+    if (!existing || !canvasRef.current) return;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      setHasDrawn(true);
+      setLocked(true);
+    };
+    img.src = existing;
+  }, []);
+
+  function getPos(e, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (src.clientX - rect.left) * scaleX,
+      y: (src.clientY - rect.top) * scaleY,
+    };
+  }
+
+  function onDown(e) {
+    e.preventDefault();
+    if (locked) return;
+    drawing.current = true;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const pos = getPos(e, canvas);
+    ctx.beginPath();
+    ctx.moveTo(pos.x, pos.y);
+  }
+
+  function onMove(e) {
+    if (!drawing.current || locked) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    ctx.strokeStyle = 'rgba(232,201,154,0.9)';
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    const pos = getPos(e, canvas);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    setHasDrawn(true);
+  }
+
+  function onUp() {
+    if (!drawing.current) return;
+    drawing.current = false;
+    if (hasDrawn) {
+      pendingData.current = canvasRef.current.toDataURL('image/png');
+      setLocked(true);
+    }
+  }
+
+  useEffect(() => {
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  });
+
+  function clear() {
+    const canvas = canvasRef.current;
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    pendingData.current = null;
+    setHasDrawn(false);
+    setLocked(false);
+    onSave(null);
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      {/* 캔버스 영역 */}
+      <div style={{
+        position: 'relative',
+        borderBottom: locked
+          ? '1px solid rgba(205,154,99,0.45)'
+          : '1px solid rgba(255,255,255,0.18)',
+        transition: 'border-color 0.4s ease',
+        paddingBottom: 4,
+      }}>
+        {/* 서명란 힌트 */}
+        {!hasDrawn && (
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            pointerEvents: 'none',
+            color: 'rgba(255,252,223,0.18)', fontSize: 13, letterSpacing: 3,
+            fontStyle: 'italic', fontWeight: 300,
+          }}>
+            sign here
+          </div>
+        )}
+        {/* 왼쪽 작은 마크 */}
+        <div style={{
+          position: 'absolute', left: 0, bottom: -1,
+          width: 8, height: 1,
+          background: locked ? 'rgba(205,154,99,0.6)' : 'rgba(255,255,255,0.35)',
+          transition: 'background 0.4s ease',
+        }} />
+        <canvas
+          ref={canvasRef}
+          width={680}
+          height={110}
+          style={{
+            display: 'block', width: '100%', height: 110,
+            cursor: locked ? 'default' : 'crosshair',
+            touchAction: 'none',
+          }}
+          onMouseDown={onDown}
+          onTouchStart={onDown}
+          onTouchMove={onMove}
+          onTouchEnd={onUp}
+        />
+      </div>
+
+      {/* 버튼 영역 */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, paddingTop: 10 }}>
+        {hasDrawn && !locked && (
+          <span style={{ fontSize: 12, color: 'rgba(255,252,223,0.25)', letterSpacing: 1, marginRight: 4 }}>
+            서명 완료 후 확인을 눌러주세요
+          </span>
+        )}
+        <button onClick={clear} style={sigBtnStyle}>지우기</button>
+        <motion.button
+          onClick={() => { if (hasDrawn && pendingData.current) { onSave(pendingData.current); onClose(); } }}
+          disabled={!hasDrawn}
+          whileHover={hasDrawn ? { translateY: -1 } : {}}
+          style={{
+            ...sigBtnStyle,
+            opacity: hasDrawn ? 1 : 0.35,
+            background: hasDrawn ? 'rgba(205,154,99,0.2)' : 'transparent',
+            borderColor: hasDrawn ? 'rgba(205,154,99,0.45)' : 'rgba(255,255,255,0.12)',
+            color: hasDrawn ? '#e8c99a' : 'rgba(255,252,223,0.4)',
+          }}>
+          확인
+        </motion.button>
+      </div>
+    </div>
+  );
+}
+const sigBtnStyle = {
+  padding: '6px 18px', borderRadius: 50, fontSize: 12, fontFamily: 'inherit',
+  cursor: 'pointer', border: '1px solid rgba(255,255,255,0.15)',
+  background: 'transparent', color: 'rgba(255,252,223,0.45)',
+  transition: 'all 0.25s', letterSpacing: 0.5,
+};
+
+// ── 그림 편지 캔버스 컴포넌트 ──
+const PALETTE = [
+  '#2a1a0a','#5a3a1a','#8b5e3c','#cd9a63','#e8c99a',
+  '#fffcdf','#ffffff','#c0392b','#e67e22','#27ae60',
+  '#2980b9','#8e44ad','#f39c12','#1a1a2e','#000000',
+];
+
+function DrawCanvas({ onHasDrawn, onCanvasReady }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const lastPos = useRef(null);
+  const historyRef = useRef([]); // ImageData 스냅샷 스택
+  const [tool, setTool] = useState('pen');
+  const [color, setColor] = useState('#2a1a0a');
+  const [size, setSize] = useState(4);
+  const [hasDrawn, setHasDrawn] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fdf6e8';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // 초기 상태를 히스토리에 저장
+    historyRef.current = [ctx.getImageData(0, 0, canvas.width, canvas.height)];
+    if (onCanvasReady) onCanvasReady(canvas);
+  }, []);
+
+  // Ctrl+Z 단축키
+  useEffect(() => {
+    function onKeyDown(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        undo();
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  function saveHistory() {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    historyRef.current.push(snapshot);
+    if (historyRef.current.length > 50) historyRef.current.shift(); // 최대 50단계
+  }
+
+  function undo() {
+    const canvas = canvasRef.current;
+    if (!canvas || historyRef.current.length <= 1) return;
+    historyRef.current.pop(); // 현재 상태 제거
+    const prev = historyRef.current[historyRef.current.length - 1];
+    canvas.getContext('2d').putImageData(prev, 0, 0);
+    const isEmpty = historyRef.current.length === 1;
+    if (isEmpty) { setHasDrawn(false); onHasDrawn(false); }
+  }
+
+  function getPos(e, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    return {
+      x: (src.clientX - rect.left) * (canvas.width / rect.width),
+      y: (src.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }
+
+  function onDown(e) {
+    e.preventDefault();
+    drawing.current = true;
+    const canvas = canvasRef.current;
+    const pos = getPos(e, canvas);
+    lastPos.current = pos;
+    const ctx = canvas.getContext('2d');
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, (tool === 'eraser' ? size * 4 : size) / 2, 0, Math.PI * 2);
+    ctx.fillStyle = tool === 'eraser' ? '#fdf6e8' : color;
+    ctx.fill();
+  }
+
+  function onMove(e) {
+    e.preventDefault();
+    if (!drawing.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const pos = getPos(e, canvas);
+    ctx.beginPath();
+    ctx.moveTo(lastPos.current.x, lastPos.current.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.strokeStyle = tool === 'eraser' ? '#fdf6e8' : color;
+    ctx.lineWidth = tool === 'eraser' ? size * 4 : size;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    lastPos.current = pos;
+    if (!hasDrawn) { setHasDrawn(true); onHasDrawn(true); }
+  }
+
+  function onUp(e) {
+    e.preventDefault();
+    if (!drawing.current) return;
+    drawing.current = false;
+    saveHistory(); // 획 하나 끝날 때마다 히스토리 저장
+  }
+
+  function clear() {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fdf6e8';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    historyRef.current = [ctx.getImageData(0, 0, canvas.width, canvas.height)];
+    setHasDrawn(false);
+    onHasDrawn(false);
+  }
+
+  return (
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* 툴바 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {/* 팔레트 */}
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+          {PALETTE.map(c => (
+            <div key={c} onClick={() => { setColor(c); setTool('pen'); }}
+              style={{ width: 22, height: 22, borderRadius: '50%', background: c, cursor: 'pointer', border: color === c && tool === 'pen' ? '2px solid rgba(255,255,255,0.9)' : '2px solid rgba(255,255,255,0.2)', boxSizing: 'border-box', transition: 'transform 0.15s', transform: color === c && tool === 'pen' ? 'scale(1.25)' : 'scale(1)' }} />
+          ))}
+        </div>
+
+        {/* 구분선 */}
+        <div style={{ width: 1, height: 24, background: 'rgba(255,255,255,0.15)' }} />
+
+        {/* 브러시 크기 */}
+        {[2, 5, 12].map((s, i) => (
+          <div key={s} onClick={() => { setSize(s); setTool('pen'); }}
+            style={{ width: 28, height: 28, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: `1px solid ${size === s && tool === 'pen' ? 'rgba(255,220,160,0.6)' : 'rgba(255,255,255,0.2)'}`, background: size === s && tool === 'pen' ? 'rgba(72,56,41,0.6)' : 'rgba(255,255,255,0.06)', transition: 'all 0.15s' }}>
+            <div style={{ width: [5,9,15][i], height: [5,9,15][i], borderRadius: '50%', background: 'rgba(255,255,255,0.7)' }} />
+          </div>
+        ))}
+
+        {/* 지우개 */}
+        <button onClick={() => setTool('eraser')}
+          style={{ padding: '5px 14px', borderRadius: 50, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', border: `1px solid ${tool === 'eraser' ? 'rgba(255,220,160,0.6)' : 'rgba(255,255,255,0.2)'}`, background: tool === 'eraser' ? 'rgba(72,56,41,0.6)' : 'rgba(255,255,255,0.06)', color: 'rgba(255,252,223,0.7)', transition: 'all 0.15s' }}>
+          지우개
+        </button>
+
+        {/* 실행 취소 */}
+        <button onClick={undo}
+          style={{ padding: '5px 14px', borderRadius: 50, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.06)', color: 'rgba(255,252,223,0.7)', transition: 'all 0.15s' }}>
+          ↩ 되돌리기
+        </button>
+
+        {/* 전체 지우기 */}
+        <button onClick={clear}
+          style={{ padding: '5px 14px', borderRadius: 50, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid rgba(255,100,100,0.3)', background: 'rgba(255,80,80,0.08)', color: 'rgba(255,180,180,0.7)', transition: 'all 0.15s' }}>
+          전체 지우기
+        </button>
+      </div>
+
+      {/* 캔버스 */}
+      <div style={{ borderRadius: 28, overflow: 'hidden', boxShadow: '0 4px 32px rgba(0,0,0,0.3)' }}>
+        <canvas
+          ref={canvasRef}
+          width={1000}
+          height={480}
+          style={{ display: 'block', width: '100%', height: 480, cursor: tool === 'eraser' ? 'cell' : 'crosshair', touchAction: 'none', userSelect: 'none' }}
+          onMouseDown={onDown}
+          onMouseMove={onMove}
+          onMouseUp={onUp}
+          onMouseLeave={onUp}
+          onTouchStart={onDown}
+          onTouchMove={onMove}
+          onTouchEnd={onUp}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function WritePage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [mode, setMode] = useState(location.state?.mode || 'text');
   const [text, setText] = useState('');
 
-  // 영상 상태
+  // 영상 상태 (video & call 공용)
   const [stage, setStage] = useState('idle');
   const [countdown, setCountdown] = useState(3);
   const [timeLeft, setTimeLeft] = useState(30);
   const [videoUrl, setVideoUrl] = useState('');
-
   const [showRetryConfirm, setShowRetryConfirm] = useState(false);
+
+  // 사진 촬영
+  const [imageUrl, setImageUrl] = useState('');
+  const [imageUploading, setImageUploading] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
+  const photoVideoRef = useRef(null);
+  const photoStreamRef = useRef(null);
+
+  // 그림 편지
+  const [drawCanvasEl, setDrawCanvasEl] = useState(null);
+  const [drawHasDrawn, setDrawHasDrawn] = useState(false);
+  const [drawUploading, setDrawUploading] = useState(false);
+
+  // 서명
+  const [signatureData, setSignatureData] = useState(null);
+  const [showSig, setShowSig] = useState(false);
 
   // 모달 상태
   const [showModal, setShowModal] = useState(false);
@@ -38,16 +468,21 @@ export default function WritePage() {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // 수신인 (타인에게 보내기)
+  const [toOther, setToOther] = useState(false);
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientName, setRecipientName] = useState('');
+
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
 
   useEffect(() => {
-    fetch('/get-user-info').then(r => r.json()).then(d => {
-      if (d.email) setEmail(d.email);
-      if (d.name) setName(d.name);
-    }).catch(() => {});
+    fetch('/get-user-info')
+      .then(r => { if (r.status === 401) { navigate('/login'); return null; } return r.json(); })
+      .then(d => { if (!d) return; if (d.email) setEmail(d.email); if (d.name) setName(d.name); })
+      .catch(() => {});
   }, []);
 
   useEffect(() => { return () => { streamRef.current?.getTracks().forEach(t => t.stop()); }; }, []);
@@ -123,23 +558,120 @@ export default function WritePage() {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
       setStage('idle');
+      setVideoUrl('');
+    }
+    if (m !== 'text' && streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+      setStage('idle');
+      setVideoUrl('');
     }
   }
 
-  function handleFromMe() {
+  async function openPhotoCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      photoStreamRef.current = stream;
+      setShowCamera(true);
+      setTimeout(() => {
+        if (photoVideoRef.current) photoVideoRef.current.srcObject = stream;
+      }, 50);
+    } catch { alert('카메라 권한을 허용해주세요.'); }
+  }
+
+  function closePhotoCamera() {
+    photoStreamRef.current?.getTracks().forEach(t => t.stop());
+    photoStreamRef.current = null;
+    setShowCamera(false);
+  }
+
+  async function capturePhoto() {
+    const video = photoVideoRef.current;
+    if (!video) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    closePhotoCamera();
+    setImageUploading(true);
+    try {
+      const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+      const res = await fetch('/get-image-upload-url?ext=jpg');
+      if (!res.ok) throw new Error();
+      const { uploadUrl, publicUrl } = await res.json();
+      const put = await fetch(uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+      if (!put.ok) throw new Error();
+      setImageUrl(publicUrl);
+    } catch { alert('사진 업로드 실패. 다시 시도해주세요.'); }
+    finally { setImageUploading(false); }
+  }
+
+  async function uploadSignature(dataUrl) {
+    try {
+      const res = await fetch('/get-image-upload-url?ext=png');
+      if (!res.ok) return dataUrl; // 업로드 실패 시 base64 fallback
+      const { uploadUrl, publicUrl } = await res.json();
+      const blob = await (await fetch(dataUrl)).blob();
+      const put = await fetch(uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/png' } });
+      if (!put.ok) return dataUrl;
+      return publicUrl;
+    } catch { return dataUrl; }
+  }
+
+  async function uploadCanvas() {
+    setDrawUploading(true);
+    try {
+      const canvas = drawCanvasEl;
+      if (!canvas) throw new Error('canvas not ready');
+      const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+      const res = await fetch('/get-image-upload-url?ext=png');
+      if (!res.ok) throw new Error();
+      const { uploadUrl, publicUrl } = await res.json();
+      const put = await fetch(uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/png' } });
+      if (!put.ok) throw new Error();
+      return publicUrl;
+    } finally { setDrawUploading(false); }
+  }
+
+  async function handleFromMe() {
     if (mode === 'text' && !text.trim()) return alert('내용을 작성해주세요!');
-    if (mode === 'video' && !videoUrl) return alert('먼저 영상을 촬영해주세요!');
+    if ((mode === 'video' || mode === 'call') && !videoUrl) return alert('먼저 영상을 촬영해주세요!');
+    if (mode === 'draw' && !drawHasDrawn) return alert('그림을 그려주세요!');
     setShowModal(true);
   }
 
   async function handleSave() {
     if (!openDate) return alert('개봉일을 선택해주세요!');
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return alert('이메일 형식이 올바르지 않습니다.');
+    if (toOther) {
+      if (!recipientEmail) return alert('받는 사람 이메일을 입력해주세요.');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) return alert('받는 사람 이메일 형식이 올바르지 않습니다.');
+    }
     setSaving(true);
     try {
-      const body = mode === 'text'
-        ? { type: 'text', content: text, openDate, email }
-        : { type: 'video', videoUrl, openDate, email };
+      // 서명이 base64라면 R2에 업로드 후 URL로 교체
+      let finalSignature = signatureData;
+      if (mode === 'text' && signatureData?.startsWith('data:')) {
+        finalSignature = await uploadSignature(signatureData);
+      }
+
+      // 그림 편지 캔버스 업로드
+      let drawImageUrl;
+      if (mode === 'draw') {
+        drawImageUrl = await uploadCanvas();
+      }
+
+      const body = {
+        type: mode,
+        content: mode === 'text' ? text : undefined,
+        videoUrl: (mode === 'video' || mode === 'call') ? videoUrl : undefined,
+        imageUrl: mode === 'text' ? (imageUrl || undefined) : mode === 'draw' ? drawImageUrl : undefined,
+        signatureData: mode === 'text' ? (finalSignature || undefined) : undefined,
+        openDate,
+        email,
+        recipientEmail: toOther ? recipientEmail : undefined,
+        recipientName: toOther ? recipientName : undefined,
+      };
       const res = await fetch('/write-letter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -155,6 +687,158 @@ export default function WritePage() {
     } catch { alert('서버 연결 오류'); }
     finally { setSaving(false); }
   }
+
+  // ── 카메라 UI (video / call 공용) ──
+  const cameraUI = (
+    <motion.div key="camera"
+      initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.35, ease }}
+      style={{ width: 1000, marginBottom: 32 }}
+    >
+      {/* call 모드 안내 문구 */}
+      {mode === 'call' && (
+        <div style={{ textAlign: 'center', marginBottom: 12, color: 'rgba(255,252,223,0.45)', fontSize: 14, letterSpacing: 1 }}>
+          미래의 나에게 영상통화를 남겨보세요
+        </div>
+      )}
+      <div style={{
+        width: '100%', height: 480, background: mode === 'call' ? '#0a1a0a' : '#0a0a0a',
+        borderRadius: 28, overflow: 'hidden', position: 'relative',
+        border: mode === 'call' ? '1px solid rgba(0,220,100,0.15)' : 'none',
+      }}>
+        {stage === 'done' ? (
+          <motion.video key={videoUrl} src={videoUrl} controls playsInline
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          <video ref={videoRef} autoPlay muted playsInline
+            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: stage === 'idle' ? 0 : 1, transition: 'opacity 0.4s' }}
+          />
+        )}
+
+        {/* call 모드: 상단 상태바 */}
+        {mode === 'call' && stage === 'recording' && (
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.5)', padding: '10px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#00dc64', boxShadow: '0 0 6px #00dc64' }} />
+              <span style={{ color: '#fff', fontSize: 13 }}>통화 중</span>
+            </div>
+            <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>
+              {String(Math.floor((30 - timeLeft) / 60)).padStart(2, '0')}:{String((30 - timeLeft) % 60).padStart(2, '0')}
+            </span>
+          </div>
+        )}
+
+        {/* 뷰파인더 코너 */}
+        {stage !== 'done' && ['tl','tr','bl','br'].map(pos => (
+          <div key={pos} style={{
+            position: 'absolute',
+            width: 24, height: 24,
+            top: pos.startsWith('t') ? 20 : 'auto',
+            bottom: pos.startsWith('b') ? 20 : 'auto',
+            left: pos.endsWith('l') ? 20 : 'auto',
+            right: pos.endsWith('r') ? 20 : 'auto',
+            borderTop: pos.startsWith('t') ? `2px solid ${mode === 'call' ? 'rgba(0,220,100,0.5)' : 'rgba(255,255,255,0.5)'}` : 'none',
+            borderBottom: pos.startsWith('b') ? `2px solid ${mode === 'call' ? 'rgba(0,220,100,0.5)' : 'rgba(255,255,255,0.5)'}` : 'none',
+            borderLeft: pos.endsWith('l') ? `2px solid ${mode === 'call' ? 'rgba(0,220,100,0.5)' : 'rgba(255,255,255,0.5)'}` : 'none',
+            borderRight: pos.endsWith('r') ? `2px solid ${mode === 'call' ? 'rgba(0,220,100,0.5)' : 'rgba(255,255,255,0.5)'}` : 'none',
+          }} />
+        ))}
+
+        {/* REC 표시 (video 모드) */}
+        {mode === 'video' && stage === 'recording' && (
+          <div style={{ position: 'absolute', top: 20, left: 52, display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(0,0,0,0.55)', padding: '5px 12px', borderRadius: 6 }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#ff3333', animation: 'recPulse 1.2s infinite' }} />
+            <span style={{ color: '#ff3333', fontSize: 13, fontWeight: 700, letterSpacing: 2 }}>REC</span>
+            <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, marginLeft: 4 }}>
+              {String(Math.floor(timeLeft / 60)).padStart(2, '0')}:{String(timeLeft % 60).padStart(2, '0')}
+            </span>
+          </div>
+        )}
+
+        {/* 카운트다운 */}
+        {stage === 'counting' && (
+          <AnimatePresence mode="wait">
+            <motion.div key={countdown}
+              initial={{ scale: 1.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 140, fontWeight: 700, color: mode === 'call' ? '#00dc64' : 'white', textShadow: `0 0 40px ${mode === 'call' ? 'rgba(0,220,100,0.4)' : 'rgba(255,255,255,0.4)'}` }}
+            >
+              {countdown}
+            </motion.div>
+          </AnimatePresence>
+        )}
+
+        {/* 업로드 중 */}
+        {stage === 'uploading' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', color: '#fffcdf', fontSize: 18 }}>
+            업로드 중...
+          </motion.div>
+        )}
+
+        {/* 셔터 버튼 */}
+        {stage === 'idle' && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20 }}>
+            <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 14, letterSpacing: 2 }}>{mode === 'call' ? 'CALL' : 'CAMERA'}</span>
+            <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }} onClick={prepareCamera}
+              style={{ width: 76, height: 76, borderRadius: '50%', border: `3px solid ${mode === 'call' ? 'rgba(0,220,100,0.75)' : 'rgba(255,255,255,0.75)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+              <div style={{ width: 58, height: 58, borderRadius: '50%', background: mode === 'call' ? 'rgba(0,220,100,0.88)' : 'rgba(255,255,255,0.88)' }} />
+            </motion.div>
+          </div>
+        )}
+
+        {/* 녹화 중지 버튼 */}
+        {stage === 'recording' && (
+          <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)' }}>
+            <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }} onClick={stopRecording}
+              style={{ width: 76, height: 76, borderRadius: '50%', border: `3px solid ${mode === 'call' ? 'rgba(255,80,80,0.8)' : 'rgba(255,80,80,0.8)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+              {mode === 'call'
+                ? <span style={{ fontSize: 28 }}>📵</span>
+                : <div style={{ width: 28, height: 28, borderRadius: 6, background: '#ff3333' }} />
+              }
+            </motion.div>
+          </div>
+        )}
+
+        {/* 다시 촬영 */}
+        {stage === 'done' && !showRetryConfirm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+            <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }} onClick={() => setShowRetryConfirm(true)}
+              style={{ width: 76, height: 76, borderRadius: '50%', border: '3px solid rgba(255,255,255,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }}>
+              <div style={{ width: 58, height: 58, borderRadius: '50%', background: 'rgba(255,255,255,0.88)' }} />
+            </motion.div>
+            <span style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, letterSpacing: 1 }}>다시 촬영</span>
+          </motion.div>
+        )}
+
+        {/* 다시 촬영 확인 오버레이 */}
+        <AnimatePresence>
+          {showRetryConfirm && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28, borderRadius: 28 }}>
+              <span style={{ color: '#fffcdf', fontSize: 22, fontWeight: 300 }}>다시 촬영하시겠습니까?</span>
+              <div style={{ display: 'flex', gap: 14 }}>
+                <motion.button whileHover={{ background: 'rgba(255,255,255,0.14)' }}
+                  onClick={() => setShowRetryConfirm(false)}
+                  style={{ width: 130, height: 50, borderRadius: 50, fontSize: 17, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid rgba(255,255,255,.25)', background: 'rgba(255,255,255,.08)', color: '#f2efe8', transition: 'all 0.2s' }}>
+                  아니요
+                </motion.button>
+                <motion.button whileHover={{ translateY: -2 }}
+                  onClick={() => { setShowRetryConfirm(false); retryVideo(); }}
+                  style={{ width: 130, height: 50, borderRadius: 50, fontSize: 17, fontFamily: 'inherit', cursor: 'pointer', border: 'none', background: 'linear-gradient(135deg,#e7cfa1,#cfa874)', color: '#2b1e10', transition: 'all 0.2s' }}>
+                  예
+                </motion.button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  );
 
   return (
     <motion.div
@@ -173,7 +857,7 @@ export default function WritePage() {
       {/* 돌아가기 */}
       <motion.button
         variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: { duration: 1, delay: 0.4 } } }}
-        onClick={() => navigate('/hello')}
+        onClick={() => navigate(-1)}
         className="back-link"
       >
         ← 돌아가기
@@ -181,187 +865,140 @@ export default function WritePage() {
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', paddingTop: 60 }}>
 
-        {/* 제목 + 모드 토글 한 줄 */}
+        {/* 제목 + 모드 토글 */}
         <motion.div variants={item} style={{ width: 1000, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <div style={{ fontSize: 42, fontWeight: 400, color: 'rgba(245,245,245,0.7)', textShadow: '0 0 20px rgba(255,255,255,0.4)' }}>
             To. me
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {['text', 'video'].map(m => (
-              <button key={m} onClick={() => handleModeSwitch(m)} style={{
-                padding: '7px 20px', borderRadius: 50, fontSize: 15, fontFamily: 'inherit', cursor: 'pointer',
+            {[
+              { key: 'text', label: '✉ 텍스트' },
+              { key: 'video', label: '🎥 영상' },
+              { key: 'call', label: '📱 영상통화' },
+              { key: 'draw', label: '🎨 그림' },
+            ].map(({ key, label }) => (
+              <button key={key} onClick={() => handleModeSwitch(key)} style={{
+                padding: '7px 18px', borderRadius: 50, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer',
                 border: '1px solid', transition: 'all 0.25s',
-                borderColor: mode === m ? 'rgba(255,220,160,0.5)' : 'rgba(255,255,255,0.2)',
-                background: mode === m ? 'rgba(72,56,41,0.75)' : 'rgba(255,255,255,0.06)',
-                color: mode === m ? '#ffeacd' : 'rgba(255,252,223,0.5)',
-                boxShadow: mode === m ? '0 0 10px rgba(255,220,160,0.15)' : 'none',
+                borderColor: mode === key ? 'rgba(255,220,160,0.45)' : 'rgba(255,255,255,0.15)',
+                background: mode === key ? 'rgba(72,56,41,0.75)' : 'rgba(255,255,255,0.05)',
+                color: mode === key ? '#ffeacd' : 'rgba(255,252,223,0.4)',
+                boxShadow: mode === key ? '0 0 8px rgba(255,220,160,0.12)' : 'none',
               }}>
-                {m === 'text' ? '✉ 텍스트' : '🎥 영상'}
+                {label}
               </button>
             ))}
           </div>
         </motion.div>
 
-        {/* 텍스트 모드 */}
+        {/* 모드 콘텐츠 */}
         <AnimatePresence mode="wait">
           {mode === 'text' ? (
             <motion.div key="text"
               initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.35, ease }}
-              onClick={() => document.getElementById('textInput')?.focus()}
-              style={{
-                width: 1000, height: 480, marginBottom: 32,
-                background: 'rgba(140,130,115,0.25)', border: '1.5px solid rgba(255,255,255,0.3)',
-                borderRadius: 28, backdropFilter: 'blur(10px)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                position: 'relative', cursor: 'text',
-              }}
+              style={{ width: 1000, marginBottom: 32 }}
             >
-              {!text && (
-                <span style={{ color: 'rgba(255,252,223,0.5)', fontSize: 26, fontWeight: 300, position: 'absolute', pointerEvents: 'none', userSelect: 'none' }}>
-                  내년의 나에게 하고 싶은 말을 적어주세요
-                </span>
-              )}
-              <textarea id="textInput" value={text} onChange={e => setText(e.target.value)}
-                style={{ width: '100%', height: '100%', background: 'transparent', border: 'none', outline: 'none', padding: 50, color: '#fffcdf', fontSize: 26, fontWeight: 300, resize: 'none', fontFamily: 'inherit', lineHeight: 1.7 }}
-              />
+              {/* 텍스트 입력 */}
+              <div
+                onClick={() => document.getElementById('textInput')?.focus()}
+                style={{
+                  width: '100%', height: 360, marginBottom: 16,
+                  background: 'rgba(140,130,115,0.25)', border: '1.5px solid rgba(255,255,255,0.3)',
+                  borderRadius: 28, backdropFilter: 'blur(10px)',
+                  position: 'relative', cursor: 'text', overflow: 'hidden',
+                }}
+              >
+                <AnimatedTextarea
+                  value={text}
+                  onChange={setText}
+                  placeholder="내년의 나에게 하고 싶은 말을 적어주세요"
+                />
+              </div>
+
+              {/* 사진 촬영 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <button onClick={imageUploading ? undefined : openPhotoCamera} disabled={imageUploading}
+                  style={{ padding: '7px 18px', borderRadius: 50, fontSize: 13, fontFamily: 'inherit', cursor: imageUploading ? 'default' : 'pointer', border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.07)', color: 'rgba(255,252,223,0.65)', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: 6, opacity: imageUploading ? 0.6 : 1 }}>
+                  {imageUploading ? '업로드 중...' : '📷 사진 촬영'}
+                </button>
+                {imageUrl && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <img src={imageUrl} style={{ height: 36, borderRadius: 8, border: '1px solid rgba(255,255,255,0.2)' }} />
+                    <button onClick={() => setImageUrl('')} style={{ background: 'none', border: 'none', color: 'rgba(255,100,100,0.7)', cursor: 'pointer', fontSize: 16 }}>×</button>
+                  </div>
+                )}
+                <button onClick={() => setShowSig(s => !s)}
+                  style={{ padding: '7px 18px', borderRadius: 50, fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid', transition: 'all 0.2s', borderColor: showSig ? 'rgba(205,154,99,0.5)' : 'rgba(255,255,255,0.2)', background: showSig ? 'rgba(72,56,41,0.6)' : 'rgba(255,255,255,0.07)', color: showSig ? '#ffeacd' : 'rgba(255,252,223,0.65)' }}>
+                  ✍ 서명 {signatureData ? '✓' : ''}
+                </button>
+              </div>
+
+              {/* 서명 캔버스 */}
+              <AnimatePresence>
+                {showSig && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }}>
+                    <SignatureCanvas onSave={(data) => setSignatureData(data)} onClose={() => setShowSig(false)} existing={signatureData} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
-          ) : (
-            /* ── 영상 모드 (카메라 UI) ── */
-            <motion.div key="video"
+          ) : mode === 'draw' ? (
+            <motion.div key="draw"
               initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.35, ease }}
               style={{ width: 1000, marginBottom: 32 }}
             >
-              <div style={{
-                width: '100%', height: 480, background: '#0a0a0a',
-                borderRadius: 28, overflow: 'hidden', position: 'relative',
-              }}>
-                {/* 영상 완료 시 재생 / 그 외 카메라 */}
-                {stage === 'done' ? (
-                  <motion.video key={videoUrl} src={videoUrl} controls playsInline
-                    initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
-                ) : (
-                  <video ref={videoRef} autoPlay muted playsInline
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: stage === 'idle' ? 0 : 1, transition: 'opacity 0.4s' }}
-                  />
-                )}
-
-                {/* 뷰파인더 코너 브라켓 */}
-                {stage !== 'done' && ['tl','tr','bl','br'].map(pos => (
-                  <div key={pos} style={{
-                    position: 'absolute',
-                    width: 24, height: 24,
-                    top: pos.startsWith('t') ? 20 : 'auto',
-                    bottom: pos.startsWith('b') ? 20 : 'auto',
-                    left: pos.endsWith('l') ? 20 : 'auto',
-                    right: pos.endsWith('r') ? 20 : 'auto',
-                    borderTop: pos.startsWith('t') ? '2px solid rgba(255,255,255,0.5)' : 'none',
-                    borderBottom: pos.startsWith('b') ? '2px solid rgba(255,255,255,0.5)' : 'none',
-                    borderLeft: pos.endsWith('l') ? '2px solid rgba(255,255,255,0.5)' : 'none',
-                    borderRight: pos.endsWith('r') ? '2px solid rgba(255,255,255,0.5)' : 'none',
-                  }} />
-                ))}
-
-                {/* REC 표시 */}
-                {stage === 'recording' && (
-                  <div style={{ position: 'absolute', top: 20, left: 52, display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(0,0,0,0.55)', padding: '5px 12px', borderRadius: 6 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#ff3333', animation: 'recPulse 1.2s infinite' }} />
-                    <span style={{ color: '#ff3333', fontSize: 13, fontWeight: 700, letterSpacing: 2 }}>REC</span>
-                    <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, marginLeft: 4 }}>
-                      {String(Math.floor(timeLeft / 60)).padStart(2, '0')}:{String(timeLeft % 60).padStart(2, '0')}
-                    </span>
-                  </div>
-                )}
-
-                {/* 카운트다운 */}
-                {stage === 'counting' && (
-                  <AnimatePresence mode="wait">
-                    <motion.div key={countdown}
-                      initial={{ scale: 1.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }}
-                      transition={{ duration: 0.3 }}
-                      style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 140, fontWeight: 700, color: 'white', textShadow: '0 0 40px rgba(255,255,255,0.4)' }}
-                    >
-                      {countdown}
-                    </motion.div>
-                  </AnimatePresence>
-                )}
-
-                {/* 업로드 중 */}
-                {stage === 'uploading' && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                    style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', color: '#fffcdf', fontSize: 18 }}>
-                    업로드 중...
-                  </motion.div>
-                )}
-
-                {/* 셔터 / 중지 버튼 */}
-                {stage === 'idle' && (
-                  <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20 }}>
-                    <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 14, letterSpacing: 2 }}>CAMERA</span>
-                    <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }} onClick={prepareCamera}
-                      style={{ width: 76, height: 76, borderRadius: '50%', border: '3px solid rgba(255,255,255,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-                      <div style={{ width: 58, height: 58, borderRadius: '50%', background: 'rgba(255,255,255,0.88)' }} />
-                    </motion.div>
-                  </div>
-                )}
-
-                {stage === 'recording' && (
-                  <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)' }}>
-                    <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }} onClick={stopRecording}
-                      style={{ width: 76, height: 76, borderRadius: '50%', border: '3px solid rgba(255,80,80,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-                      <div style={{ width: 28, height: 28, borderRadius: 6, background: '#ff3333' }} />
-                    </motion.div>
-                  </div>
-                )}
-
-                {/* 다시 촬영 버튼 (하단 중앙, 셔터 자리) */}
-                {stage === 'done' && !showRetryConfirm && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                    style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-                    <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }} onClick={() => setShowRetryConfirm(true)}
-                      style={{ width: 76, height: 76, borderRadius: '50%', border: '3px solid rgba(255,255,255,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }}>
-                      <div style={{ width: 58, height: 58, borderRadius: '50%', background: 'rgba(255,255,255,0.88)' }} />
-                    </motion.div>
-                    <span style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, letterSpacing: 1 }}>다시 촬영</span>
-                  </motion.div>
-                )}
-
-                {/* 다시 촬영 확인 오버레이 */}
-                <AnimatePresence>
-                  {showRetryConfirm && (
-                    <motion.div
-                      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                      style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28, borderRadius: 28 }}>
-                      <span style={{ color: '#fffcdf', fontSize: 22, fontWeight: 300 }}>다시 촬영하시겠습니까?</span>
-                      <div style={{ display: 'flex', gap: 14 }}>
-                        <motion.button whileHover={{ background: 'rgba(255,255,255,0.14)' }}
-                          onClick={() => setShowRetryConfirm(false)}
-                          style={{ width: 130, height: 50, borderRadius: 50, fontSize: 17, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid rgba(255,255,255,.25)', background: 'rgba(255,255,255,.08)', color: '#f2efe8', transition: 'all 0.2s' }}>
-                          아니요
-                        </motion.button>
-                        <motion.button whileHover={{ translateY: -2 }}
-                          onClick={() => { setShowRetryConfirm(false); retryVideo(); }}
-                          style={{ width: 130, height: 50, borderRadius: 50, fontSize: 17, fontFamily: 'inherit', cursor: 'pointer', border: 'none', background: 'linear-gradient(135deg,#e7cfa1,#cfa874)', color: '#2b1e10', transition: 'all 0.2s' }}>
-                          예
-                        </motion.button>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+              <DrawCanvas onHasDrawn={setDrawHasDrawn} onCanvasReady={setDrawCanvasEl} />
             </motion.div>
+          ) : (
+            cameraUI
           )}
         </AnimatePresence>
 
         {/* From.Me 버튼 */}
-        <motion.button variants={item} whileHover={{ translateY: -2 }} onClick={handleFromMe}
-          style={{ width: 300, height: 70, background: 'rgba(72,56,41,0.7)', border: 'none', borderRadius: 50, color: '#ffeacd', fontSize: 30, fontWeight: 400, fontFamily: 'inherit', cursor: 'pointer', boxShadow: '0 0 12px 2px rgba(255,252,223,0.15)' }}>
+        <motion.button variants={item} whileHover={{ translateY: -2, boxShadow: '0 0 20px 4px rgba(255,252,223,0.2)' }} onClick={handleFromMe}
+          style={{ padding: '14px 64px', background: 'rgba(72,56,41,0.72)', border: '1px solid rgba(205,154,99,0.25)', borderRadius: 50, color: '#ffeacd', fontSize: 22, fontWeight: 400, fontFamily: 'inherit', cursor: 'pointer', boxShadow: '0 0 12px 2px rgba(255,252,223,0.1)', letterSpacing: 1, backdropFilter: 'blur(10px)', transition: 'all 0.3s cubic-bezier(0.22,1,0.36,1)' }}>
           From.Me
         </motion.button>
       </div>
+
+      {/* ── 카메라 촬영 모달 ── */}
+      <AnimatePresence>
+        {showCamera && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 110, gap: 24 }}
+          >
+            <div style={{ position: 'relative', borderRadius: 24, overflow: 'hidden', width: 480, aspectRatio: '4/3', background: '#000' }}>
+              <video ref={photoVideoRef} autoPlay playsInline muted
+                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+              {/* 뷰파인더 코너 */}
+              {['tl','tr','bl','br'].map(pos => (
+                <div key={pos} style={{
+                  position: 'absolute', width: 22, height: 22,
+                  top: pos.startsWith('t') ? 18 : 'auto', bottom: pos.startsWith('b') ? 18 : 'auto',
+                  left: pos.endsWith('l') ? 18 : 'auto', right: pos.endsWith('r') ? 18 : 'auto',
+                  borderTop: pos.startsWith('t') ? '2px solid rgba(255,255,255,0.6)' : 'none',
+                  borderBottom: pos.startsWith('b') ? '2px solid rgba(255,255,255,0.6)' : 'none',
+                  borderLeft: pos.endsWith('l') ? '2px solid rgba(255,255,255,0.6)' : 'none',
+                  borderRight: pos.endsWith('r') ? '2px solid rgba(255,255,255,0.6)' : 'none',
+                }} />
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+              <button onClick={closePhotoCamera}
+                style={{ padding: '10px 26px', borderRadius: 50, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.07)', color: 'rgba(255,252,223,0.6)' }}>
+                취소
+              </button>
+              <motion.div whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.92 }} onClick={capturePhoto}
+                style={{ width: 72, height: 72, borderRadius: '50%', border: '3px solid rgba(255,255,255,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+                <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255,255,255,0.9)' }} />
+              </motion.div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── 저장 모달 ── */}
       <AnimatePresence>
@@ -373,34 +1010,60 @@ export default function WritePage() {
             <motion.div
               initial={{ opacity: 0, y: 30, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.96 }}
               transition={{ duration: 0.4, ease }}
-              style={{ background: 'rgba(30,40,55,0.95)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 28, padding: '48px 56px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 28, minWidth: 480 }}
+              style={{ background: 'rgba(30,40,55,0.95)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 28, padding: '44px 52px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22, minWidth: 480, maxHeight: '90vh', overflowY: 'auto' }}
             >
-              <div style={{ fontSize: 36, fontWeight: 400, color: '#e9dcc6', textShadow: '0 0 12px rgba(255,252,223,.3)' }}>
+              <div style={{ fontSize: 32, fontWeight: 400, color: '#e9dcc6', textShadow: '0 0 12px rgba(255,252,223,.3)' }}>
                 편지를 저장하시겠습니까?
               </div>
 
               {/* 개봉일 */}
               <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ color: 'rgba(255,252,223,0.5)', fontSize: 13, paddingLeft: 4 }}>📅 개봉일</label>
+                <label style={labelStyle}>📅 개봉일</label>
                 <input type="date" min={tomorrow()} value={openDate} onChange={e => setOpenDate(e.target.value)} style={inputStyle} />
               </div>
 
-              {/* 이메일 */}
+              {/* 수신인 토글 */}
+              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <label style={labelStyle}>📬 받는 사람</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {[{ val: false, label: '나에게' }, { val: true, label: '다른 사람에게' }].map(({ val, label }) => (
+                    <button key={String(val)} onClick={() => setToOther(val)}
+                      style={{ flex: 1, padding: '9px 0', borderRadius: 50, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid', transition: 'all 0.2s',
+                        borderColor: toOther === val ? 'rgba(255,220,160,0.5)' : 'rgba(255,255,255,0.2)',
+                        background: toOther === val ? 'rgba(72,56,41,0.75)' : 'rgba(255,255,255,0.06)',
+                        color: toOther === val ? '#ffeacd' : 'rgba(255,252,223,0.5)',
+                      }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <AnimatePresence>
+                  {toOther && (
+                    <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <input type="text" placeholder="받는 사람 이름 (선택)" value={recipientName} onChange={e => setRecipientName(e.target.value)} style={inputStyle} />
+                      <input type="email" placeholder="받는 사람 이메일 *" value={recipientEmail} onChange={e => setRecipientEmail(e.target.value)} style={inputStyle} />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* 내 발송 이메일 */}
               <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ color: 'rgba(255,252,223,0.5)', fontSize: 13, paddingLeft: 4 }}>✉ 발송 이메일 <span style={{ color: 'rgba(255,252,223,0.3)' }}>(개봉일에 자동 발송)</span></label>
+                <label style={labelStyle}>✉ {toOther ? '내 이메일 (선택)' : '발송 이메일'} <span style={{ color: 'rgba(255,252,223,0.3)' }}>(개봉일에 자동 발송)</span></label>
                 <input type="email" placeholder="이메일 주소" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
               </div>
 
               {/* 버튼 */}
-              <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+              <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
                 <motion.button whileHover={{ background: 'rgba(255,255,255,0.14)' }}
-                  onClick={() => { setShowModal(false); navigate('/hello'); }}
-                  style={{ width: 180, height: 58, borderRadius: 50, fontSize: 22, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid rgba(255,255,255,.2)', background: 'rgba(255,255,255,.07)', color: '#f2efe8', backdropFilter: 'blur(6px)', transition: 'all 0.3s' }}>
+                  onClick={() => { setShowModal(false); navigate(-1); }}
+                  style={{ width: 170, height: 54, borderRadius: 50, fontSize: 20, fontFamily: 'inherit', cursor: 'pointer', border: '1px solid rgba(255,255,255,.2)', background: 'rgba(255,255,255,.07)', color: '#f2efe8', backdropFilter: 'blur(6px)', transition: 'all 0.3s' }}>
                   아니요
                 </motion.button>
                 <motion.button whileHover={{ translateY: -2, boxShadow: '0 0 24px rgba(231,207,161,.7)' }}
                   onClick={handleSave} disabled={saving}
-                  style={{ width: 180, height: 58, borderRadius: 50, fontSize: 22, fontFamily: 'inherit', cursor: 'pointer', border: 'none', background: 'linear-gradient(135deg, #e7cfa1, #cfa874)', color: '#2b1e10', boxShadow: '0 0 16px rgba(231,207,161,.4)', transition: 'all 0.3s', opacity: saving ? 0.6 : 1 }}>
+                  style={{ width: 170, height: 54, borderRadius: 50, fontSize: 20, fontFamily: 'inherit', cursor: 'pointer', border: 'none', background: 'linear-gradient(135deg, #e7cfa1, #cfa874)', color: '#2b1e10', boxShadow: '0 0 16px rgba(231,207,161,.4)', transition: 'all 0.3s', opacity: saving ? 0.6 : 1 }}>
                   {saving ? '저장 중...' : '저장'}
                 </motion.button>
               </div>
@@ -415,7 +1078,8 @@ export default function WritePage() {
 const inputStyle = {
   padding: '12px 18px', borderRadius: 14, width: '100%',
   border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.07)',
-  color: '#fffcdf', fontSize: 16, fontFamily: 'inherit', outline: 'none',
+  color: '#fffcdf', fontSize: 15, fontFamily: 'inherit', outline: 'none',
   backdropFilter: 'blur(6px)', colorScheme: 'dark',
   transition: 'border-color 0.2s',
 };
+const labelStyle = { color: 'rgba(255,252,223,0.5)', fontSize: 13, paddingLeft: 4 };

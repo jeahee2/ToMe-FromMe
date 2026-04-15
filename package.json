@@ -4,7 +4,9 @@
   "type": "module",
   "main": "app.js",
   "scripts": {
-    "start": "node --env-file=.env app.js"
+    "start": "node --env-file=.env app.js",
+    "dev": "concurrently \"cd client && npm run dev\" \"node --env-file=.env app.js\"",
+    "build": "cd client && npm run build"
   },
   "repository": {
     "type": "git",
@@ -29,5 +31,8 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.5",
     "prisma": "^6.19.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

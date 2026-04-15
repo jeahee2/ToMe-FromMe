@@ -10,7 +10,7 @@ export default function DonePage() {
   const { openDate, name } = useLocation().state || {};
   const [phase, setPhase] = useState('circle');
 
-  if (!openDate) { navigate('/hello', { replace: true }); return null; }
+  if (!openDate) { navigate('/login', { replace: true }); return null; }
 
   const d = daysUntil(openDate);
   const dChars = ['D', '-', ...String(d).split('')];
@@ -168,7 +168,7 @@ export default function DonePage() {
               <motion.button
                 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: 0.5, ease }}
-                onClick={() => navigate('/hello')}
+                onClick={() => navigate(-1)}
                 whileHover={{ translateY: -2 }}
                 style={{
                   position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)',

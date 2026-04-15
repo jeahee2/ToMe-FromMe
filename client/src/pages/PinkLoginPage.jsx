@@ -32,7 +32,7 @@ export default function PinkLoginPage() {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'linear-gradient(to bottom,#f6b1b1 0%,#f7bfae 30%,#f8caa7 55%,#f6d3a0 75%,#f3d8a3 100%)', overflow: 'hidden' }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10, background: 'linear-gradient(to bottom,#f6b1b1 0%,#f7bfae 30%,#f8caa7 55%,#f6d3a0 75%,#f3d8a3 100%)', overflow: 'hidden' }}>
       <PinkStars />
 
       <motion.div

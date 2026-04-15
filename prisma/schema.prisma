@@ -24,13 +24,17 @@ model Member {
 
 // 2. 편지 (Letter)
 model Letter {
-  id        Int      @id @default(autoincrement())
-  type      String   @default("text") // "text" | "video"
-  content   String?  // 텍스트 편지 내용 (영상 편지면 null)
-  videoUrl  String?  // R2 영상 URL (텍스트 편지면 null)
-  openDate  DateTime // 📅 개봉 예정일
-  createdAt DateTime @default(now())
-  sentAt    DateTime? // 이메일 발송 시각 (null = 미발송)
+  id             Int      @id @default(autoincrement())
+  type           String   @default("text") // "text" | "video" | "call"
+  content        String?  // 텍스트 편지 내용
+  videoUrl       String?  // R2 영상 URL
+  imageUrl       String?  // R2 이미지 URL (사진 첨부)
+  signatureData  String?  // base64 서명 이미지
+  recipientEmail String?  // 타인에게 보낼 경우 수신인 이메일
+  recipientName  String?  // 타인에게 보낼 경우 수신인 이름
+  openDate       DateTime // 📅 개봉 예정일
+  createdAt      DateTime @default(now())
+  sentAt         DateTime? // 이메일 발송 시각 (null = 미발송)
 
   author    Member   @relation(fields: [authorId], references: [id])
   authorId  Int
